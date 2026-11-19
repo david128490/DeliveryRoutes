@@ -6,8 +6,12 @@ namespace Backend;
 /// Plans the pickup-and-delivery route. Exact part: Dijkstra distances between the points that
 /// matter. Heuristic part: cheapest insertion + relocation + single-stop moves, with random restarts.
 /// </summary>
-public class RoutePlanner
+public partial class RoutePlanner
 {
+    public const int DefaultRestarts = 200;
+    public const double DefaultMaxSeconds = 10;
+    public const int DefaultSeed = 12345;
+
     /// <summary>Internal compact stop: location index, pickup/delivery flag and package index.</summary>
     private readonly record struct Node(int Loc, bool IsPickup, int Pkg);
 
@@ -69,13 +73,19 @@ public class RoutePlanner
     }
 
     /// <summary>Number of random restarts of the improvement phase.</summary>
-    public int Restarts { get; init; } = 200;
+    public int Restarts { get; init; } = DefaultRestarts;
 
     /// <summary>Safety time limit (seconds) for the whole improvement phase.</summary>
-    public double MaxSeconds { get; init; } = 10;
+    public double MaxSeconds { get; init; } = DefaultMaxSeconds;
 
     /// <summary>Fixed seed so the result is reproducible.</summary>
-    public int Seed { get; init; } = 12345;
+    public int Seed { get; init; } = DefaultSeed;
+
+    /// <summary>Maximum number of packages carried at the same time (int.MaxValue = no limit).</summary>
+    public int Capacity { get; init; } = int.MaxValue;
+
+    /// <summary>If true, the route must end back at the start position.</summary>
+    public bool ReturnToStart { get; init; }
 
     private void AddPoint(string location)
     {
@@ -131,6 +141,7 @@ public class RoutePlanner
         var picked = new bool[_packages.Count];
         var delivered = new bool[_packages.Count];
         int current = StartIndex;
+        int load = 0;
 
         for (int step = 0; step < 2 * _packages.Count; step++)
         {
@@ -138,20 +149,37 @@ public class RoutePlanner
             int bestDistance = int.MaxValue;
             for (int pkg = 0; pkg < _packages.Count; pkg++)
             {
-                if (!picked[pkg] && _dist[current, _pickupLoc[pkg]] < bestDistance)
+                if (delivered[pkg])
                 {
-                    bestDistance = _dist[current, _pickupLoc[pkg]];
-                    bestNode = new Node(_pickupLoc[pkg], true, pkg);
+                    continue;
                 }
-                else if (picked[pkg] && !delivered[pkg] && _dist[current, _deliveryLoc[pkg]] < bestDistance)
+
+                bool isPickup = !picked[pkg];
+                if (isPickup && load >= Capacity)
                 {
-                    bestDistance = _dist[current, _deliveryLoc[pkg]];
-                    bestNode = new Node(_deliveryLoc[pkg], false, pkg);
+                    continue;   // the bike is full: only deliveries are allowed
+                }
+
+                int target = isPickup ? _pickupLoc[pkg] : _deliveryLoc[pkg];
+                if (_dist[current, target] < bestDistance)
+                {
+                    bestDistance = _dist[current, target];
+                    bestNode = new Node(target, isPickup, pkg);
                 }
             }
 
             Node chosen = bestNode!.Value;
-            if (chosen.IsPickup) picked[chosen.Pkg] = true; else delivered[chosen.Pkg] = true;
+            if (chosen.IsPickup)
+            {
+                picked[chosen.Pkg] = true;
+                load++;
+            }
+            else
+            {
+                delivered[chosen.Pkg] = true;
+                load--;
+            }
+
             route.Add(chosen);
             current = chosen.Loc;
         }
@@ -159,7 +187,7 @@ public class RoutePlanner
         return ToStops(route);
     }
 
-    /// <summary>Total metres of the route (start -> first stop -> ... -> last stop).</summary>
+    /// <summary>Total metres of the route (start -> first stop -> ... -> last stop [-> start]).</summary>
     public double TotalDistance(List<Stop> route)
     {
         long total = 0;
@@ -171,6 +199,11 @@ public class RoutePlanner
             current = next;
         }
 
+        if (ReturnToStart)
+        {
+            total += _dist[current, StartIndex];
+        }
+
         return total;
     }
 
@@ -178,8 +211,8 @@ public class RoutePlanner
     public int Distance(string from, string to) => _dist[_index[from], _index[to]];
 
     /// <summary>
-    /// True if every package is picked up exactly once and delivered exactly once,
-    /// after its pickup, and each task happens at the package's own location.
+    /// True if every package is picked up exactly once and delivered exactly once, after its pickup,
+    /// each task happens at the package's own location and the capacity is never exceeded.
     /// </summary>
     public bool IsValid(List<Stop> route)
     {
@@ -191,6 +224,7 @@ public class RoutePlanner
         var packageById = _packages.ToDictionary(p => p.Id);
         var picked = new HashSet<int>();
         var delivered = new HashSet<int>();
+        int load = 0;
 
         foreach (Stop stop in route)
         {
@@ -205,6 +239,12 @@ public class RoutePlanner
                 {
                     return false;
                 }
+
+                load++;
+                if (load > Capacity)
+                {
+                    return false;
+                }
             }
             else
             {
@@ -212,6 +252,8 @@ public class RoutePlanner
                 {
                     return false;
                 }
+
+                load--;
             }
         }
 
@@ -234,6 +276,11 @@ public class RoutePlanner
             current = node.Loc;
         }
 
+        if (ReturnToStart)
+        {
+            total += _dist[current, StartIndex];
+        }
+
         return total;
     }
 
@@ -253,6 +300,7 @@ public class RoutePlanner
     /// <summary>
     /// Tries every pair (a, b) with a &lt;= b: pickup goes before route[a], delivery before route[b]
     /// (original indices), so pickup is always before delivery. Cost increase is computed in O(1).
+    /// Positions that would exceed the capacity are skipped.
     /// </summary>
     private (int Delta, int A, int B) BestInsertion(List<Node> route, int pkg)
     {
@@ -260,8 +308,12 @@ public class RoutePlanner
         int p = _pickupLoc[pkg];
         int q = _deliveryLoc[pkg];
 
-        // Sequence position k: 0 = start, k >= 1 = route[k - 1].
-        int At(int k) => k == 0 ? StartIndex : route[k - 1].Loc;
+        // Sequence position k: 0 = start, 1..n = route[k - 1], n + 1 = start again (only if returning).
+        int seqEnd = n + (ReturnToStart ? 1 : 0);
+        int At(int k) => (k == 0 || k > n) ? StartIndex : route[k - 1].Loc;
+
+        // loadAfter[k] = packages carried after sequence position k.
+        int[] loadAfter = LoadProfile(route);
 
         int bestDelta = int.MaxValue;
         int bestA = 0;
@@ -270,14 +322,22 @@ public class RoutePlanner
         for (int a = 0; a <= n; a++)
         {
             int u = At(a);
-            bool hasNext = a < n;
+            bool hasNext = a < seqEnd;
             int v = hasNext ? At(a + 1) : -1;
 
             int pickupDelta = _dist[u, p] + (hasNext ? _dist[p, v] - _dist[u, v] : 0);
             int togetherDelta = _dist[u, p] + _dist[p, q] + (hasNext ? _dist[q, v] - _dist[u, v] : 0);
 
+            // Carrying the new package adds 1 to the load at sequence positions a..b.
+            int peak = 0;
             for (int b = a; b <= n; b++)
             {
+                peak = Math.Max(peak, loadAfter[b]);
+                if (peak + 1 > Capacity)
+                {
+                    break;   // a later delivery position can only be worse
+                }
+
                 int delta;
                 if (b == a)
                 {
@@ -286,7 +346,7 @@ public class RoutePlanner
                 else
                 {
                     int u2 = At(b);
-                    bool hasNext2 = b < n;
+                    bool hasNext2 = b < seqEnd;
                     int v2 = hasNext2 ? At(b + 1) : -1;
                     delta = pickupDelta + _dist[u2, q] + (hasNext2 ? _dist[q, v2] - _dist[u2, v2] : 0);
                 }
@@ -301,6 +361,35 @@ public class RoutePlanner
         }
 
         return (bestDelta, bestA, bestB);
+    }
+
+    /// <summary>profile[k] = packages carried after the first k stops (profile[0] = 0).</summary>
+    private static int[] LoadProfile(List<Node> route)
+    {
+        var profile = new int[route.Count + 1];
+        int load = 0;
+        for (int i = 0; i < route.Count; i++)
+        {
+            load += route[i].IsPickup ? 1 : -1;
+            profile[i + 1] = load;
+        }
+
+        return profile;
+    }
+
+    private bool RespectsCapacity(List<Node> route)
+    {
+        int load = 0;
+        foreach (Node node in route)
+        {
+            load += node.IsPickup ? 1 : -1;
+            if (load > Capacity)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // ------------------------------------------------------------------ improvement
@@ -329,7 +418,7 @@ public class RoutePlanner
                 }
             }
 
-            // Move single stops while keeping "pickup before delivery".
+            // Move single stops while keeping "pickup before delivery" and the capacity.
             if (MoveSingleStops(ref route, ref cost))
             {
                 improved = true;
@@ -368,8 +457,9 @@ public class RoutePlanner
             {
                 rest.Insert(j, node);
                 int candidate = Cost(rest);
+                bool better = candidate < bestCost && RespectsCapacity(rest);
                 rest.RemoveAt(j);
-                if (candidate < bestCost)
+                if (better)
                 {
                     bestCost = candidate;
                     bestPosition = j;

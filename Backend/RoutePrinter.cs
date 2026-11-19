@@ -18,6 +18,16 @@ public static class RoutePrinter
         var text = new StringBuilder();
         text.AppendLine($"Posición inicial: {start}");
         text.AppendLine($"Paquetes: {packageCount} Ubicaciones: {locationCount} Calles: {streetCount} ({oneWayCount} de un solo sentido)");
+        if (planner.Capacity != int.MaxValue)
+        {
+            text.AppendLine($"Capacidad de la moto: {planner.Capacity} paquetes a la vez");
+        }
+
+        if (planner.ReturnToStart)
+        {
+            text.AppendLine($"La ruta termina de regreso en {start}");
+        }
+
         text.AppendLine();
 
         var carried = new HashSet<int>();
@@ -67,6 +77,16 @@ public static class RoutePrinter
             current = location;
         }
 
+        // Optional last leg: back to the start position.
+        if (planner.ReturnToStart && current != start)
+        {
+            int meters = planner.Distance(current, start);
+            totalMeters += meters;
+            stopNumber++;
+            text.AppendLine($"{stopNumber}. Regresar de {current} a {start} ({meters} m).");
+            text.AppendLine($"   Camino: {string.Join(" -> ", planner.PathBetween(current, start))}");
+        }
+
         if (!planner.IsValid(route) || totalMeters != (long)planner.TotalDistance(route))
         {
             throw new InvalidOperationException("La ruta calculada no pasó la verificación final.");
@@ -90,3 +110,4 @@ public static class RoutePrinter
         return $"paquetes {head} y {ids[^1]}";
     }
 }
+    
