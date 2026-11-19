@@ -3,12 +3,13 @@ using Backend;
 try
 {
     CityData city = CityFile.Load("city.txt");
-    List<Package> packages = PackageFile.Load("packages.txt", city.Graph);
 
-    Console.WriteLine($"Ubicaciones: {city.Graph.VertexCount}");
-    Console.WriteLine($"Calles: {city.StreetCount} ({city.OneWayCount} de un solo sentido)");
-    Console.WriteLine($"Paquetes: {packages.Count}");
-    Console.WriteLine($"Primer paquete: {packages[0]}");
+    foreach (var (from, to) in new[] { ("AQ", "BS"), ("BS", "AQ"), ("D", "AR") })
+    {
+        var (distance, previous) = ShortestPaths.Dijkstra(city.Graph, from);
+        var path = ShortestPaths.ReconstructPath(previous, from, to);
+        Console.WriteLine($"{from} -> {to}: {distance[to]} m   Camino: {string.Join(" -> ", path)}");
+    }
 }
 catch (DataValidationException ex)
 {
