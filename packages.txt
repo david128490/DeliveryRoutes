@@ -2,8 +2,8 @@
 # One task per line: location,action,package
 # action: Pickup | Delivery
 # 30 packages = 60 tasks (one pickup and one delivery per package).
-CN,Pickup,1
-M,Delivery,1
+ZZ,Pickup,1
+
 CN,Pickup,2
 BM,Delivery,2
 CN,Pickup,3
