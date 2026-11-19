@@ -1,36 +1,51 @@
-using System.Diagnostics;
-using System.Globalization;
 using Backend;
+
+// Usage: dotnet run -- city.txt packages.txt D
+string cityPath;
+string packagesPath;
+string start;
+
+if (args.Length >= 3)
+{
+    cityPath = args[0];
+    packagesPath = args[1];
+    start = args[2].Trim();
+}
+else
+{
+    Console.Write("Ruta del archivo del mapa (city.txt): ");
+    cityPath = (Console.ReadLine() ?? "").Trim();
+    Console.Write("Ruta del archivo de paquetes (packages.txt): ");
+    packagesPath = (Console.ReadLine() ?? "").Trim();
+    Console.Write("Posición inicial del domiciliario: ");
+    start = (Console.ReadLine() ?? "").Trim();
+}
 
 try
 {
-    Test("city_mini.txt", "packages_mini.txt", "A");
-    Test("city.txt", "packages.txt", "D");
+    CityData city = CityFile.Load(cityPath);
+    List<Package> packages = PackageFile.Load(packagesPath, city.Graph);
+
+    if (!city.Graph.HasVertex(start))
+    {
+        throw new DataValidationException(new[] { $"La posición inicial «{start}» no existe en el mapa." });
+    }
+
+    var planner = new RoutePlanner(city.Graph, packages, start);
+    List<Stop> route = planner.Plan();
+
+    Console.Write(RoutePrinter.Build(
+        planner, route, start, packages.Count, city.Graph.VertexCount, city.StreetCount, city.OneWayCount));
 }
 catch (DataValidationException ex)
 {
+    Console.Error.WriteLine("Se encontraron errores en los datos:");
     foreach (string error in ex.Errors)
     {
         Console.Error.WriteLine($"  - {error}");
     }
+
+    return 1;
 }
 
-static string Km(double meters) => (meters / 1000).ToString("F2", CultureInfo.InvariantCulture);
-
-static void Test(string cityPath, string packagesPath, string start)
-{
-    CityData city = CityFile.Load(cityPath);
-    List<Package> packages = PackageFile.Load(packagesPath, city.Graph);
-    var planner = new RoutePlanner(city.Graph, packages, start);
-
-    List<Stop> greedy = planner.PlanGreedy();
-
-    var stopwatch = Stopwatch.StartNew();
-    List<Stop> best = planner.Plan();
-    stopwatch.Stop();
-
-    Console.WriteLine($"{cityPath} (inicio {start})");
-    Console.WriteLine($"  Vecino más cercano: {Km(planner.TotalDistance(greedy))} km   válida: {planner.IsValid(greedy)}");
-    Console.WriteLine($"  Ruta mejorada:      {Km(planner.TotalDistance(best))} km   válida: {planner.IsValid(best)}   ({stopwatch.Elapsed.TotalSeconds:F1} s)");
-    Console.WriteLine();
-}
+return 0;
